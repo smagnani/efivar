@@ -494,6 +494,90 @@ err:
 }
 
 struct device HIDDEN
+*network_device_get(const char * const ifname)
+{
+	struct device *dev;
+	char *linkbuf = NULL;
+	char *tmpbuf = NULL;
+	int rc;
+	ssize_t probe_stop_offset = 0;
+
+	dev = device_new();
+	if (!dev) {
+		return NULL;
+	}
+
+	dev->interface_type = network;
+	dev->ifname = strdup(ifname);
+	if (!dev->ifname)
+		goto err;
+
+	/*
+	 * find the device link, which looks like:
+	 * ../../devices/$PCI_STUFF/net/$IFACE
+	 */
+	rc = sysfs_readlink(&linkbuf, "class/net/%s", dev->ifname);
+	if (rc < 0 || !linkbuf)
+	        goto err;
+	dev->link = strdup(linkbuf);
+	if (!dev->link) {
+	        efi_error("strdup(\"%s\") failed", linkbuf);
+	        goto err;
+	}
+	debug("dev->link: %s", dev->link);
+
+	rc = sysfs_readlink(&tmpbuf, "class/net/%s/device", dev->ifname);
+	if (rc < 0 || !tmpbuf) {
+		debug("readlink of /sys/class/net/%s/device failed",
+		      dev->ifname);
+
+		dev->device = strdup("");
+	} else {
+		dev->device = strdup(tmpbuf);
+	}
+
+	if (!dev->device) {
+		efi_error("strdup(\"%s\") failed", tmpbuf);
+		goto err;
+	}
+
+	char *filepath = NULL;
+	rc = find_device_file(&filepath, "driver", "class/net/%s", dev->ifname);
+	if (rc >= 0) {
+		rc = sysfs_readlink(&tmpbuf, "%s", filepath);
+		if (rc < 0 || !tmpbuf) {
+			efi_error("readlink of /sys/%s failed", filepath);
+			goto err;
+		}
+
+		linkbuf = pathseg(tmpbuf, -1);
+		if (!linkbuf) {
+			efi_error("could not get segment -1 of \"%s\"", tmpbuf);
+			goto err;
+		}
+
+		dev->driver = strdup(linkbuf);
+	} else {
+		dev->driver = strdup("");
+	}
+
+	if (!dev->driver) {
+	        efi_error("strdup(\"%s\") failed", linkbuf);
+	        goto err;
+	}
+
+	probe_stop_offset = probe_link(dev, "net/");
+	if (probe_stop_offset < 0) {
+		goto err;
+	}
+
+	return dev;
+err:
+	device_free(dev);
+	return NULL;
+}
+
+struct device HIDDEN
 *partition_device_get(int fd, int partition)
 {
 	struct device *dev;
@@ -639,7 +723,7 @@ err:
 }
 
 int HIDDEN
-make_blockdev_path(uint8_t *buf, ssize_t size, struct device *dev)
+make_dev_path(uint8_t *buf, ssize_t size, struct device *dev)
 {
 	ssize_t off = 0;
 
@@ -675,22 +759,6 @@ make_mac_path(uint8_t *buf, ssize_t size, const char * const ifname)
 	int fd = -1, rc;
 	ssize_t ret = -1, sz, off = 0;
 	char busname[PATH_MAX+1] = "";
-	struct device dev;
-
-	memset(&dev, 0, sizeof (dev));
-	dev.interface_type = network;
-	dev.ifname = strdupa(ifname);
-	if (!dev.ifname)
-	        return -1;
-
-	/*
-	 * find the device link, which looks like:
-	 * ../../devices/$PCI_STUFF/net/$IFACE
-	 */
-	rc = sysfs_readlink(&dev.link, "class/net/%s", ifname);
-	if (rc < 0 || !dev.link)
-	        goto err;
-	debug("dev.link: %s", dev.link);
 
 	memset(&ifr, 0, sizeof (ifr));
 	strncpy(ifr.ifr_name, ifname, IF_NAMESIZE);
@@ -712,12 +780,7 @@ make_mac_path(uint8_t *buf, ssize_t size, const char * const ifname)
 	if (rc < 0)
 	        goto err;
 
-	sz = pci_parser.create(&dev, buf, size, off);
-	if (sz < 0)
-	        goto err;
-	off += sz;
-
-	sz = efidp_make_mac_addr(buf+off, size?size-off:0,
+	sz = efidp_make_mac_addr(buf, size,
 	                         ifr.ifr_ifru.ifru_hwaddr.sa_family,
 	                         (uint8_t *)ifr.ifr_ifru.ifru_hwaddr.sa_data,
 	                         sizeof(ifr.ifr_ifru.ifru_hwaddr.sa_data));

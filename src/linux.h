@@ -148,14 +148,15 @@ struct device {
 };
 
 extern struct device HIDDEN *partition_device_get(int fd, int partition);
+extern struct device HIDDEN *network_device_get(const char * const ifname);
 extern void HIDDEN device_free(struct device *dev);
 extern int HIDDEN set_disk_and_part_name(struct device *dev);
 extern int HIDDEN set_part(struct device *dev, int value);
 extern int HIDDEN set_part_name(struct device *dev, const char * const fmt, ...);
 extern int HIDDEN set_disk_name(struct device *dev, const char * const fmt, ...);
 extern bool HIDDEN is_pata(struct device *dev);
-extern int HIDDEN make_blockdev_path(uint8_t *buf, ssize_t size,
-				     struct device *dev);
+extern int HIDDEN make_dev_path(uint8_t *buf, ssize_t size,
+				struct device *dev);
 extern int HIDDEN parse_acpi_hid_uid(struct device *dev, const char *fmt, ...);
 extern int HIDDEN eb_nvme_ns_id(int fd, uint32_t *ns_id);
 

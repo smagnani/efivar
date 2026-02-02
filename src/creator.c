@@ -249,7 +249,7 @@ efi_va_generate_file_device_path_from_esp(uint8_t *buf, ssize_t size,
 		 * symlink from /sys/dev/block/$major:$minor and get it
 		 * from there.
 		 */
-		sz = make_blockdev_path(buf, size, dev);
+		sz = make_dev_path(buf, size, dev);
 		if (sz < 0) {
 			efi_error("could not create device path");
 			goto err;
@@ -464,13 +464,27 @@ efi_generate_ipv4_device_path(uint8_t *buf, ssize_t size,
 			      uint16_t protocol,
 			      uint8_t addr_origin)
 {
+	struct device *dev = NULL;
 	ssize_t off = 0;
 	ssize_t sz;
 
-	sz = make_mac_path(buf, size, ifname);
+	dev = network_device_get(ifname);
+	if (dev == NULL) {
+		efi_error("could not get net interface info");
+		goto err;
+	}
+
+	sz = make_dev_path(buf, size, dev);
+	if (sz < 0) {
+		efi_error("could not create device path");
+		goto err;
+	}
+	off += sz;
+
+	sz = make_mac_path(buf+off, size ? (size - off) : 0, ifname);
 	if (sz < 0) {
 		efi_error("could not make MAC DP node");
-		return -1;
+		goto err;
 	}
 	off += sz;
 
@@ -479,18 +493,23 @@ efi_generate_ipv4_device_path(uint8_t *buf, ssize_t size,
 			    protocol, addr_origin);
 	if (sz < 0) {
 		efi_error("could not make IPV4 DP node");
-		return -1;
+		goto err;
 	}
 	off += sz;
 
 	sz = efidp_make_end_entire(buf+off, size?size-off:0);
 	if (sz < 0) {
 		efi_error("could not make EndEntire DP node");
-		return -1;
+		goto err;
 	}
 	off += sz;
 
+	device_free(dev);
 	return off;
+err:
+	device_free(dev);
+	return -1;
+
 }
 
 uint32_t PUBLIC
