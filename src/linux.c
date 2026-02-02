@@ -365,14 +365,10 @@ print_dev_dp_node(struct device *dev, struct dev_probe *probe)
 	debug("Device path node is %s", buf);
 }
 
-struct device HIDDEN
-*device_get(int fd, int partition)
+static struct device
+*device_new(void)
 {
 	struct device *dev;
-	char *linkbuf = NULL, *tmpbuf = NULL;
-	int i = 0;
-	unsigned int n = 0;
-	int rc;
 
 	size_t nmemb = (sizeof(dev_probes)
 	                / sizeof(dev_probes[0])) + 1;
@@ -383,8 +379,6 @@ struct device HIDDEN
 	        return NULL;
 	}
 
-	dev->part = partition;
-	debug("partition:%d dev->part:%d", partition, dev->part);
 	dev->probes = calloc(nmemb, sizeof(struct dev_probe *));
 	if (!dev->probes) {
 	        efi_error("could not allocate %zd bytes",
@@ -392,14 +386,134 @@ struct device HIDDEN
 	        goto err;
 	}
 
+	dev->pci_root.pci_domain = 0xffff;
+	dev->pci_root.pci_bus = 0xff;
+
+	return dev;
+err:
+	device_free(dev);
+	return NULL;
+}
+
+static ssize_t
+probe_link(struct device *dev, const char* stop_probe_at)
+{
+	int i = 0;
+	unsigned int n = 0;
+	int rc;
+	const char *current = dev->link;
+	bool needs_root = true;
+	int last_successful_probe = -1;
+	size_t stop_probe_len;
+
+	stop_probe_len = strlen(stop_probe_at);
+
+	debug("searching for device nodes in %s", dev->link);
+	for (i = 0;
+	     dev_probes[i] && dev_probes[i]->parse && *current;
+	     i++) {
+	        struct dev_probe *probe = dev_probes[i];
+	        int pos;
+
+	        if (!needs_root &&
+	            (probe->flags & DEV_PROVIDES_ROOT)) {
+	                debug("not testing %s because flags is 0x%x",
+	                      probe->name, probe->flags);
+	                continue;
+	        }
+
+	        debug("trying %s", probe->name);
+	        pos = probe->parse(dev, current, dev->link);
+	        if (pos < 0) {
+	                debug("parsing %s failed", probe->name);
+	                continue;
+	        } else if (pos > 0) {
+	                char match[pos+1];
+
+	                strncpy(match, current, pos);
+	                match[pos] = '\0';
+	                debug("%s matched '%s'", probe->name, match);
+	                dev->flags |= probe->flags;
+
+	                if (probe->flags & DEV_PROVIDES_HD ||
+	                    probe->flags & DEV_PROVIDES_ROOT ||
+	                    probe->flags & DEV_ABBREV_ONLY)
+	                        needs_root = false;
+
+	                if (probe->create)
+	                	print_dev_dp_node(dev, probe);
+
+	                dev->probes[n++] = dev_probes[i];
+	                current += pos;
+	                if (current[0] == '\0')
+	                	debug("finished");
+	                else
+	                	debug("current:'%s'", current);
+	                last_successful_probe = i;
+
+	                if (!*current || !strncmp(current, stop_probe_at, stop_probe_len))
+	                        break;
+
+	                continue;
+	        }
+
+	        debug("dev_probes[%d]: %p dev->interface_type: %d\n",
+	              i+1, dev_probes[i+1], dev->interface_type);
+
+	        if (dev_probes[i+1] == NULL && dev->interface_type == unknown) {
+	                pos = 0;
+	                // Skip over the first path component we couldn't parse and try again
+	                rc = sscanf(current, "%*[^/]/%n", &pos);
+	                if (rc < 0) {
+slash_err:
+	                        efi_error("Cannot parse device link segment \"%s\"", current);
+	                        goto err;
+	                }
+
+	                while (current[pos] == '/')
+	                        pos += 1;
+
+	                if (!current[pos])
+	                        goto slash_err;
+
+	                debug("Cannot parse device link segment '%s'", current);
+	                debug("Skipping to '%s'", current + pos);
+	                debug("This means we can only create abbreviated paths");
+	                dev->flags |= DEV_ABBREV_ONLY;
+	                i = last_successful_probe;
+	                current += pos;
+
+	                if (!*current || !strncmp(current, stop_probe_at, stop_probe_len))
+	                        break;
+	        }
+	}
+
+	return current - dev->link;
+err:
+	return -1;
+}
+
+struct device HIDDEN
+*partition_device_get(int fd, int partition)
+{
+	struct device *dev;
+	char *linkbuf = NULL, *tmpbuf = NULL;
+	int rc;
+	ssize_t probe_stop_offset = 0;
+
+	dev = device_new();
+	if (!dev) {
+	        return NULL;
+	}
+
+	dev->part = partition;
+	debug("partition:%d dev->part:%d", partition, dev->part);
+
 	rc = fstat(fd, &dev->stat);
 	if (rc < 0) {
 	        efi_error("fstat(%d) failed", fd);
 	        goto err;
 	}
-
-	dev->pci_root.pci_domain = 0xffff;
-	dev->pci_root.pci_bus = 0xff;
 
 	if (S_ISBLK(dev->stat.st_mode)) {
 	        dev->major = major(dev->stat.st_rdev);
@@ -505,91 +619,14 @@ struct device HIDDEN
 	        goto err;
 	}
 
-	const char *current = dev->link;
-	bool needs_root = true;
-	int last_successful_probe = -1;
-
-	debug("searching for device nodes in %s", dev->link);
-	for (i = 0;
-	     dev_probes[i] && dev_probes[i]->parse && *current;
-	     i++) {
-	        struct dev_probe *probe = dev_probes[i];
-	        int pos;
-
-	        if (!needs_root &&
-	            (probe->flags & DEV_PROVIDES_ROOT)) {
-	                debug("not testing %s because flags is 0x%x",
-	                      probe->name, probe->flags);
-	                continue;
-	        }
-
-	        debug("trying %s", probe->name);
-	        pos = probe->parse(dev, current, dev->link);
-	        if (pos < 0) {
-	                debug("parsing %s failed", probe->name);
-	                continue;
-	        } else if (pos > 0) {
-			char match[pos+1];
-
-			strncpy(match, current, pos);
-			match[pos] = '\0';
-	                debug("%s matched '%s'", probe->name, match);
-	                dev->flags |= probe->flags;
-
-	                if (probe->flags & DEV_PROVIDES_HD ||
-	                    probe->flags & DEV_PROVIDES_ROOT ||
-	                    probe->flags & DEV_ABBREV_ONLY)
-	                        needs_root = false;
-
-			if (probe->create)
-				print_dev_dp_node(dev, probe);
-
-	                dev->probes[n++] = dev_probes[i];
-	                current += pos;
-			if (current[0] == '\0')
-				debug("finished");
-			else
-				debug("current:'%s'", current);
-	                last_successful_probe = i;
-
-	                if (!*current || !strncmp(current, "block/", 6))
-	                        break;
-
-	                continue;
-	        }
-
-	        debug("dev_probes[%d]: %p dev->interface_type: %d\n",
-	              i+1, dev_probes[i+1], dev->interface_type);
-	        if (dev_probes[i+1] == NULL && dev->interface_type == unknown) {
-	                pos = 0;
-	                rc = sscanf(current, "%*[^/]/%n", &pos);
-	                if (rc < 0) {
-slash_err:
-	                        efi_error("Cannot parse device link segment \"%s\"", current);
-	                        goto err;
-	                }
-
-	                while (current[pos] == '/')
-	                        pos += 1;
-
-	                if (!current[pos])
-	                        goto slash_err;
-
-	                debug("Cannot parse device link segment '%s'", current);
-	                debug("Skipping to '%s'", current + pos);
-	                debug("This means we can only create abbreviated paths");
-	                dev->flags |= DEV_ABBREV_ONLY;
-	                i = last_successful_probe;
-	                current += pos;
-
-	                if (!*current || !strncmp(current, "block/", 6))
-	                        break;
-	        }
+	probe_stop_offset = probe_link(dev, "block/");
+	if (probe_stop_offset < 0) {
+		goto err;
 	}
 
 	if (dev->interface_type == unknown &&
 	    !(dev->flags & DEV_ABBREV_ONLY) &&
-	    !strcmp(current, "block/")) {
+	    !strcmp(dev->link + probe_stop_offset, "block/")) {
 	        efi_error("unknown storage interface");
 	        errno = ENOSYS;
 	        goto err;
@@ -653,6 +690,7 @@ make_mac_path(uint8_t *buf, ssize_t size, const char * const ifname)
 	rc = sysfs_readlink(&dev.link, "class/net/%s", ifname);
 	if (rc < 0 || !dev.link)
 	        goto err;
+	debug("dev.link: %s", dev.link);
 
 	memset(&ifr, 0, sizeof (ifr));
 	strncpy(ifr.ifr_name, ifname, IF_NAMESIZE);

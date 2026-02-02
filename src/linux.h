@@ -147,7 +147,7 @@ struct device {
 	};
 };
 
-extern struct device HIDDEN *device_get(int fd, int partition);
+extern struct device HIDDEN *partition_device_get(int fd, int partition);
 extern void HIDDEN device_free(struct device *dev);
 extern int HIDDEN set_disk_and_part_name(struct device *dev);
 extern int HIDDEN set_part(struct device *dev, int value);
