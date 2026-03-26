@@ -56,14 +56,21 @@ hid_err:
 		efi_error("could not parse %s/firmware_node/hid", path);
 		return -1;
 	}
+	fbuf[fbufsiz-2] = 0;		// Zap trailing newline
 	gaze = fbuf + fbufsiz - 6;	// Focus on the 4 hex digits at the end
 
 	rc = sscanf(gaze, "%04hx", &tmp16);
-	debug("rc:%d hid:0x%08x\n", rc, tmp16);
+	debug("rc:%d hid:0x%04x (from '%s')\n", rc, tmp16, fbuf);
 	if (rc != 1)
 		goto hid_err;
 
-	acpi_hid = EFIDP_EFI_PNP_ID(tmp16);
+	if (strncmp(fbuf, "PNP", 3) == 0) {
+		acpi_hid = EFIDP_EFI_PNP_ID(tmp16);
+	} else if (strncmp(fbuf, "ACPI", 4) == 0) {
+		acpi_hid = EFIDP_EFI_ACPI_ID(tmp16);
+	} else {
+		goto hid_err;
+	}
 
 	/*
 	 * Apparently basically nothing can look up a PcieRoot() node,
