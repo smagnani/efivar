@@ -571,6 +571,12 @@ struct device HIDDEN
 		goto err;
 	}
 
+	if (strncmp(dev->link + probe_stop_offset, "net/", 4) != 0) {
+	        efi_error("network device path parsing failed");
+	        errno = ENETUNREACH;
+	        goto err;
+	}
+
 	return dev;
 err:
 	device_free(dev);
