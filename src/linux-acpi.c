@@ -18,9 +18,11 @@ int HIDDEN
 parse_acpi_hid_uid(struct device *dev, const char *fmt, ...)
 {
 	int rc;
+	ssize_t fbufsiz;
 	char *path = NULL;
 	va_list ap;
 	char *fbuf = NULL;
+	const char *gaze = NULL;
 	uint16_t tmp16;
 	uint32_t acpi_hid = 0;
 	uint64_t acpi_uid_int = 0;
@@ -34,31 +36,29 @@ parse_acpi_hid_uid(struct device *dev, const char *fmt, ...)
 	if (rc < 0 || path == NULL)
 		return -1;
 
-	rc = read_sysfs_file(&fbuf, "%s/firmware_node/path", path);
-	if (rc > 0 && fbuf) {
-		size_t l = strlen(fbuf);
-		if (l > 1) {
-			fbuf[l-1] = 0;
+	fbufsiz = read_sysfs_file(&fbuf, "%s/firmware_node/path", path);
+	if (fbufsiz > 0 && fbuf) {
+		if (fbufsiz > 2) {   // 2 == "\n\0"
+			fbuf[fbufsiz-2] = 0;	// Zap trailing newline
 			dev->acpi_root.acpi_cid_str = strdup(fbuf);
 			debug("Setting ACPI root path to '%s'", fbuf);
 		}
 	}
 
-	rc = read_sysfs_file(&fbuf, "%s/firmware_node/hid", path);
-	if (rc < 0 || fbuf == NULL) {
+	fbufsiz = read_sysfs_file(&fbuf, "%s/firmware_node/hid", path);
+	if (fbufsiz < 0 || fbuf == NULL) {
 		efi_error("could not read %s/firmware_node/hid", path);
 		return -1;
 	}
 
-	rc = strlen(fbuf);
-	if (rc < 4) {
+	if (fbufsiz < 6) {	// 6 = "0123\n\0"
 hid_err:
 		efi_error("could not parse %s/firmware_node/hid", path);
 		return -1;
 	}
-	rc -= 4;
+	gaze = fbuf + fbufsiz - 6;	// Focus on the 4 hex digits at the end
 
-	rc = sscanf((char *)fbuf + rc, "%04hx", &tmp16);
+	rc = sscanf(gaze, "%04hx", &tmp16);
 	debug("rc:%d hid:0x%08x\n", rc, tmp16);
 	if (rc != 1)
 		goto hid_err;
@@ -78,21 +78,20 @@ hid_err:
 
 	errno = 0;
 	fbuf = NULL;
-	rc = read_sysfs_file(&fbuf, "%s/firmware_node/uid", path);
-	if ((rc < 0 && errno != ENOENT) || (rc > 0 && fbuf == NULL)) {
+	fbufsiz = read_sysfs_file(&fbuf, "%s/firmware_node/uid", path);
+	if ((fbufsiz < 0 && errno != ENOENT) || (fbufsiz > 0 && fbuf == NULL)) {
 		efi_error("could not read %s/firmware_node/uid", path);
 		return -1;
 	}
-	if (rc > 0) {
+	if (fbufsiz > 0) {
 		rc = sscanf((char *)fbuf, "%"PRIu64"\n", &acpi_uid_int);
 		if (rc == 1) {
 			dev->acpi_root.acpi_uid = acpi_uid_int;
 		} else {
 			/* kernel uses "%s\n" to print it, so there
 			 * should always be some value and a newline... */
-			int l = strlen((char *)fbuf);
-			if (l >= 1) {
-				fbuf[l-1] = '\0';
+			if (fbufsiz > 2) {   // 2 == "\n\0"
+				fbuf[fbufsiz-2] = '\0';
 				dev->acpi_root.acpi_uid_str = strdup(fbuf);
 			}
 		}
